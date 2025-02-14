@@ -5,11 +5,16 @@ services:
         ports:
             - "${AGENTA_PORT:-80}:${AGENTA_PORT:-80}"
             - "8081:8080"
+        expose:
+            - "81"
         volumes:
             - /var/run/docker.sock:/var/run/docker.sock
-        networks:
-            - agenta-network
         restart: always
+        labels:
+            - traefik.enable=true
+            - 'traefik.http.routers.reverse-proxy.rule=Host(`test.gaiuslex.pl`) || Host(`test.gaiuslex.pl`)'
+            - traefik.http.routers.reverse-proxy.entrypoints=websecure
+            - "traefik.http.services.reverse-proxy.loadbalancer.server.port=81"
 
     agenta-backend:
         container_name: agenta-backend-1
@@ -56,20 +61,20 @@ services:
             - "traefik.http.routers.backend.middlewares=backend-strip"
             - "traefik.http.services.backend.loadbalancer.server.port=8000"
             - "traefik.http.routers.backend.service=backend"
-        networks:
-            - agenta-network
+        expose:
+            - "8000"
         extra_hosts:
             - "host.docker.internal:host-gateway"
         depends_on:
             postgres:
                 condition: service_healthy
             apply_alembic_migration:
-                condition: service_completed_successfully
+                condition: service_healthy
         restart: always
 
     apply_alembic_migration:
         image: ghcr.io/agenta-ai/agenta-backend
-        command: sh -c "python -c 'from agenta_backend.migrations.postgres.utils import run_alembic_migration; run_alembic_migration()'"
+        command: sh -c "python -c 'from agenta_backend.migrations.postgres.utils import run_alembic_migration; run_alembic_migration()' && touch /tmp/migrations_complete && tail -f /dev/null"
         environment:
             - FEATURE_FLAG=oss
             - POSTGRES_URI=postgresql+asyncpg://username:password@postgres:5432/agenta_oss
@@ -80,8 +85,11 @@ services:
         depends_on:
             postgres:
                 condition: service_healthy
-        networks:
-            - agenta-network
+        healthcheck:
+            test: ["CMD-SHELL", "test -f /tmp/migrations_complete"]
+            interval: 10s
+            timeout: 5s
+            retries: 5
 
     agenta-web:
         container_name: agenta-web-1
@@ -93,21 +101,21 @@ services:
                 - NEXT_PUBLIC_FF=oss
                 - NEXT_PUBLIC_TELEMETRY_TRACKING_ENABLED=true
                 - NEXT_PUBLIC_POSTHOG_API_KEY=phc_hmVSxIjTW1REBHXgj2aw4HW9X6CXb6FzerBgP9XenC7
-        image: ghcr.io/agenta-ai/agenta-web
         ports:
             - "3000:3000"
-        networks:
-            - agenta-network
         labels:
             - "traefik.http.routers.agenta-web.rule=PathPrefix(`/`)"
             - "traefik.http.routers.agenta-web.entrypoints=web"
             - "traefik.http.services.agenta-web.loadbalancer.server.port=3000"
         restart: always
+        environment:
+            - NEXT_PUBLIC_AGENTA_API_URL=${DOMAIN_NAME:-http://localhost}:${AGENTA_PORT:-81}
+            - NEXT_PUBLIC_FF=oss
+            - NEXT_PUBLIC_TELEMETRY_TRACKING_ENABLED=true
+            - NEXT_PUBLIC_POSTHOG_API_KEY=phc_hmVSxIjTW1REBHXgj2aw4HW9X6CXb6FzerBgP9XenC7
 
     redis:
         image: redis:latest
-        networks:
-            - agenta-network
         volumes:
             - redis_data:/data
         restart: always
@@ -122,8 +130,6 @@ services:
         environment:
             RABBITMQ_DEFAULT_USER: "guest"
             RABBITMQ_DEFAULT_PASS: "guest"
-        networks:
-            - agenta-network
 
     celery_worker:
         container_name: celery-worker-1
@@ -145,8 +151,6 @@ services:
             - redis
         extra_hosts:
             - "host.docker.internal:host-gateway"
-        networks:
-            - agenta-network
 
     postgres:
         image: postgres:16.2
@@ -158,8 +162,6 @@ services:
             POSTGRES_DB: agenta_oss
         ports:
             - "5432:5432"
-        networks:
-            - agenta-network
         volumes:
             - postgresdb-data:/var/lib/postgresql/data/
             - ./docker-assets/postgres/init-db.sql:/docker-entrypoint-initdb.d/init-db.sql
@@ -182,8 +184,6 @@ services:
             PGADMIN_SERVER_DB: agenta_oss
         ports:
             - "5050:80"
-        networks:
-            - agenta-network
         volumes:
             - pgadmin-data:/var/lib/pgadmin
         depends_on:
@@ -219,8 +219,6 @@ services:
             - "traefik.http.routers.completion.middlewares=completion-strip"
             - "traefik.http.services.completion.loadbalancer.server.port=80"
             - "traefik.http.routers.completion.service=completion"
-        networks:
-            - agenta-network
         restart: always
         
     chat:
@@ -252,13 +250,7 @@ services:
             - "traefik.http.routers.chat.middlewares=chat-strip"
             - "traefik.http.services.chat.loadbalancer.server.port=80"
             - "traefik.http.routers.chat.service=chat"
-        networks:
-            - agenta-network
         restart: always
-
-networks:
-    agenta-network:
-        name: agenta-network
 
 volumes:
     redis_data:
