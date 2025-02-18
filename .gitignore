@@ -104,3 +104,4 @@ examples/baby_name_generator/.agentaignore
 agenta-cli/tests/test_sdk_locally/config.toml
 
 agenta-cli/agenta/client/fern
+traefik/

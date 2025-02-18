@@ -1,7 +1,13 @@
 services:
     reverse-proxy:
         image: traefik:v2.10
-        command: --api.dashboard=true --api.insecure=true --providers.docker --entrypoints.web.address=:${AGENTA_PORT:-80}
+        command: 
+            - "--api.dashboard=true"
+            - "--api.insecure=true"
+            - "--providers.docker"
+            - "--providers.file.directory=/etc/traefik"
+            - "--providers.file.watch=true"
+            - "--entrypoints.web.address=:${AGENTA_PORT:-80}"
         ports:
             - "${AGENTA_PORT:-80}:${AGENTA_PORT:-80}"
             - "8081:8080"
@@ -9,10 +15,11 @@ services:
             - "81"
         volumes:
             - /var/run/docker.sock:/var/run/docker.sock
+            - /etc/traefik/auth.toml:/etc/traefik/auth.toml
         restart: always
         labels:
             - traefik.enable=true
-            - 'traefik.http.routers.reverse-proxy.rule=Host(`test.gaiuslex.pl`) || Host(`test.gaiuslex.pl`)'
+            - 'traefik.http.routers.reverse-proxy.rule=Host(`test.gaiuslex.pl`)'
             - traefik.http.routers.reverse-proxy.entrypoints=websecure
             - "traefik.http.services.reverse-proxy.loadbalancer.server.port=81"
 
@@ -23,12 +30,12 @@ services:
           dockerfile: Dockerfile.gh
         image: ghcr.io/agenta-ai/agenta-backend
         environment:
-            - POSTGRES_URI=postgresql+asyncpg://username:password@postgres:5432/agenta_oss
+            - POSTGRES_URI=postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/agenta_oss
             - REDIS_URL=redis://redis:6379/0
             - FEATURE_FLAG=oss
             - ALEMBIC_CFG_PATH=/app/agenta_backend/migrations/postgres/alembic.oss.ini
             - AGENTA_TEMPLATE_REPO=agentaai/templates_v2
-            - POSTHOG_API_KEY=phc_hmVSxIjTW1REBHXgj2aw4HW9X6CXb6FzerBgP9XenC7
+            - POSTHOG_API_KEY=${POSTHOG_API_KEY}
             - BARE_DOMAIN_NAME=${BARE_DOMAIN_NAME:-localhost}
             - DOMAIN_NAME=${DOMAIN_NAME:-http://localhost}
             - CELERY_BROKER_URL=amqp://guest@rabbitmq//
@@ -54,13 +61,21 @@ services:
         volumes:
             - /var/run/docker.sock:/var/run/docker.sock
         labels:
-            - "traefik.http.routers.backend.rule=PathPrefix(`/api/`)"
-            - "traefik.http.routers.backend.entrypoints=web"
             - "traefik.http.middlewares.backend-strip.stripprefix.prefixes=/api"
             - "traefik.http.middlewares.backend-strip.stripprefix.forceslash=true"
-            - "traefik.http.routers.backend.middlewares=backend-strip"
             - "traefik.http.services.backend.loadbalancer.server.port=8000"
+
+            # Router for test.gaiuslex.pl with API key auth
+            - "traefik.http.routers.backend.rule=PathPrefix(`/api/`) && Host(`test.gaiuslex.pl`)"
+            - "traefik.http.routers.backend.entrypoints=web"
+            - "traefik.http.routers.backend.middlewares=backend-strip@docker,api-key-auth@file"
             - "traefik.http.routers.backend.service=backend"
+            
+            # Router for all API requests without auth
+            - "traefik.http.routers.backend-noauth.rule=PathPrefix(`/api/`)"
+            - "traefik.http.routers.backend-noauth.entrypoints=web"
+            - "traefik.http.routers.backend-noauth.middlewares=backend-strip@docker"
+            - "traefik.http.routers.backend-noauth.service=backend"
         expose:
             - "8000"
         extra_hosts:
@@ -77,7 +92,7 @@ services:
         command: sh -c "python -c 'from agenta_backend.migrations.postgres.utils import run_alembic_migration; run_alembic_migration()' && touch /tmp/migrations_complete && tail -f /dev/null"
         environment:
             - FEATURE_FLAG=oss
-            - POSTGRES_URI=postgresql+asyncpg://username:password@postgres:5432/agenta_oss
+            - POSTGRES_URI=postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/agenta_oss
             - ALEMBIC_CFG_PATH=/app/agenta_backend/migrations/postgres/alembic.oss.ini
             - AGENTA_AUTO_MIGRATIONS=false
         volumes:
@@ -100,7 +115,7 @@ services:
                 - NEXT_PUBLIC_AGENTA_API_URL=${DOMAIN_NAME:-http://localhost}:${AGENTA_PORT:-80}
                 - NEXT_PUBLIC_FF=oss
                 - NEXT_PUBLIC_TELEMETRY_TRACKING_ENABLED=true
-                - NEXT_PUBLIC_POSTHOG_API_KEY=phc_hmVSxIjTW1REBHXgj2aw4HW9X6CXb6FzerBgP9XenC7
+                - NEXT_PUBLIC_POSTHOG_API_KEY=${POSTHOG_API_KEY}
         ports:
             - "3000:3000"
         labels:
@@ -112,7 +127,7 @@ services:
             - NEXT_PUBLIC_AGENTA_API_URL=${DOMAIN_NAME:-http://localhost}:${AGENTA_PORT:-81}
             - NEXT_PUBLIC_FF=oss
             - NEXT_PUBLIC_TELEMETRY_TRACKING_ENABLED=true
-            - NEXT_PUBLIC_POSTHOG_API_KEY=phc_hmVSxIjTW1REBHXgj2aw4HW9X6CXb6FzerBgP9XenC7
+            - NEXT_PUBLIC_POSTHOG_API_KEY=${POSTHOG_API_KEY}
 
     redis:
         image: redis:latest
@@ -137,7 +152,7 @@ services:
         command: >
             celery -A agenta_backend.main.celery_app worker --concurrency=1 --loglevel=INFO
         environment:
-            - POSTGRES_URI=postgresql+asyncpg://username:password@postgres:5432/agenta_oss
+            - POSTGRES_URI=postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/agenta_oss
             - ALEMBIC_CFG_PATH=/app/agenta_backend/migrations/postgres/alembic.oss.ini
             - REDIS_URL=redis://redis:6379/0
             - CELERY_BROKER_URL=amqp://guest@rabbitmq//
@@ -157,8 +172,8 @@ services:
         container_name: postgres
         restart: always
         environment:
-            POSTGRES_USER: username
-            POSTGRES_PASSWORD: password
+            POSTGRES_USER: ${POSTGRES_USER}
+            POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
             POSTGRES_DB: agenta_oss
         ports:
             - "5432:5432"
@@ -166,7 +181,7 @@ services:
             - postgresdb-data:/var/lib/postgresql/data/
             - ./docker-assets/postgres/init-db.sql:/docker-entrypoint-initdb.d/init-db.sql
         healthcheck:
-            test: ["CMD-SHELL", "pg_isready -U username -d agenta_oss"]
+            test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d agenta_oss"]
             interval: 10s
             timeout: 5s
             retries: 5
@@ -175,12 +190,12 @@ services:
         image: dpage/pgadmin4
         restart: always
         environment:
-            PGADMIN_DEFAULT_EMAIL: "admin@example.com"
-            PGADMIN_DEFAULT_PASSWORD: "password"
+            PGADMIN_DEFAULT_EMAIL: ${PGADMIN_EMAIL}
+            PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_PASSWORD}
             PGADMIN_SERVER_HOST: "postgres"
             PGADMIN_SERVER_PORT: 5432
-            PGADMIN_SERVER_USER: "username"
-            PGADMIN_SERVER_PASSWORD: "password"
+            PGADMIN_SERVER_USER: ${POSTGRES_USER}
+            PGADMIN_SERVER_PASSWORD: ${POSTGRES_PASSWORD}
             PGADMIN_SERVER_DB: agenta_oss
         ports:
             - "5050:80"
@@ -251,6 +266,16 @@ services:
             - "traefik.http.services.chat.loadbalancer.server.port=80"
             - "traefik.http.routers.chat.service=chat"
         restart: always
+
+    auth-service:
+        build: ./auth-service
+        environment:
+            - API_KEY=${API_KEY}
+        volumes:
+            - /var/run/docker.sock:/var/run/docker.sock:ro
+        labels:
+            - "traefik.enable=true"
+            - "traefik.http.services.auth-service.loadbalancer.server.port=8000"
 
 volumes:
     redis_data:
